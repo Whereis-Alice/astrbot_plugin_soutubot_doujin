@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.0.1
+
+修复直连 soutubot.moe 时被 Cloudflare 拦成 `HTTP 403` 的问题，并补上三档绕过方案。
+
+### 新增
+- 配置项 `tls_impersonate`：可选用真实浏览器的 TLS 指纹（JA3）发请求，
+  需要 `pip install curl_cffi`。默认 `auto`——只在撞上 403 时自动切换重试一次，
+  且不占用 `max_retries` 额度；未安装 `curl_cffi` 时静默退回普通请求。
+- 配置项 `extra_cookie`：附加 Cookie，用于粘贴浏览器里的 `cf_clearance`。
+- 配置项 `reverse_proxy_url` / `reverse_proxy_token` / `reverse_proxy_images`：
+  可选的 Cloudflare Worker 反向代理。走反代时 `Referer` / `Origin` 仍指向
+  soutubot.moe，不会破坏接口签名。
+- 反代脚本 `deploy/cloudflare-worker.js`，含图片域名白名单与 `PROXY_TOKEN` 鉴权。
+- 新异常 `SoutubotBlockedError` 与 403 诊断：按 Cloudflare 响应特征区分
+  人机验证页 / WAF 规则 / 地区封锁，并给出对应的处置建议。
+- `搜本子 统计` 新增「访问链路」一行，显示当前的传输层与出口。
+
+### 变更
+- 403 不再被当成普通的「意外状态码」，而是走独立的分类与提示路径。
+- 5xx / 429 保持退避重试；其他非预期状态码不再无谓重试。
+- 配置项从 33 项增加到 38 项。
+- 单元测试从 313 个增加到 362 个。
+
 ## v1.0.0
 
 首个版本。

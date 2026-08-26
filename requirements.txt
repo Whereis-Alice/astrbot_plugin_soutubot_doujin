@@ -1,2 +1,7 @@
 aiohttp>=3.9
 Pillow>=10.0
+
+# 可选依赖（不装也能正常使用）：
+# curl_cffi —— 用真实浏览器的 TLS 指纹发请求，用来绕过 Cloudflare 的 403 拦截。
+#              需要时手动执行：pip install curl_cffi
+#              相关配置项：tls_impersonate（默认 auto，未安装时静默退回普通请求）

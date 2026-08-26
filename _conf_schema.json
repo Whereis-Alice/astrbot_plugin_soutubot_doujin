@@ -216,6 +216,37 @@
         "type": "int",
         "default": 2,
         "hint": "签名过期（401）、限流（429）和 5xx 会自动重试。"
+      },
+      "reverse_proxy_url": {
+        "description": "反向代理地址（推荐用于解决 403）",
+        "type": "string",
+        "default": "",
+        "hint": "填了之后所有请求都发给这个地址，由它转发到 soutubot.moe，用来绕过 Cloudflare 对本机 IP 的拦截。例如 https://soutubot.你的名字.workers.dev。部署方法见 README「被 Cloudflare 拦了（403）怎么办」。留空表示直连。"
+      },
+      "reverse_proxy_token": {
+        "description": "反向代理访问口令",
+        "type": "string",
+        "default": "",
+        "hint": "与反代里设置的 PROXY_TOKEN 保持一致，避免你的反代被别人白用。反代没设口令就留空。"
+      },
+      "reverse_proxy_images": {
+        "description": "预览图也走反向代理",
+        "type": "bool",
+        "default": false,
+        "hint": "预览图在另一个域名上。如果图片发不出来（同样被拦），打开这个开关。需要反代已部署 /img 路由。"
+      },
+      "tls_impersonate": {
+        "description": "浏览器指纹伪装",
+        "type": "string",
+        "default": "auto",
+        "options": ["auto", "off", "on"],
+        "hint": "auto：正常用 aiohttp，只在遇到 403 时自动换成伪装真实 Chrome 指纹的请求（需要 pip install curl_cffi，没装就自动跳过）。on：始终伪装。off：从不伪装。也可以直接填 curl_cffi 的目标名，例如 chrome124。"
+      },
+      "extra_cookie": {
+        "description": "附加 Cookie",
+        "type": "text",
+        "default": "",
+        "hint": "高级用法：把浏览器里 soutubot.moe 的 cf_clearance 等 Cookie 粘贴进来，可临时通过 Cloudflare 验证。格式 a=1; b=2。这类 Cookie 与 IP 绑定且会过期，不是长久方案。"
       }
     }
   }

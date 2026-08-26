@@ -12,17 +12,30 @@ import pytest
 
 from soutubot.client import (
     DEFAULT_BASE_URL,
+    DEFAULT_IMPERSONATE_TARGET,
     DEFAULT_USER_AGENT,
     FACTOR_NORMAL,
     FACTOR_STRICT,
+    IMPERSONATE_AUTO,
+    IMPERSONATE_MODES,
+    IMPERSONATE_OFF,
+    IMPERSONATE_ON,
     SoutubotAuthError,
+    SoutubotBlockedError,
     SoutubotClient,
     SoutubotError,
     SoutubotNetworkError,
     SoutubotRateLimitError,
     SoutubotUpstreamError,
     build_api_key,
+    classify_forbidden,
+    collect_diagnostics,
+    curl_cffi_available,
     extract_boot_token,
+    forbidden_message,
+    format_diagnostics,
+    normalize_reverse_proxy,
+    summarize_body,
 )
 from soutubot.models import SoutubotSearchResult
 
@@ -255,6 +268,34 @@ class FakeSession:
         self.closed = True
 
 
+class FakeCurlResponse:
+    """curl_cffi 的响应形态：status_code / headers / text（同步属性）。"""
+
+    def __init__(self, status_code: int, text: str = "", headers: dict | None = None):
+        self.status_code = status_code
+        self.text = text
+        self.headers = headers or {}
+
+
+class FakeCurlSession:
+    """curl_cffi.requests.AsyncSession 的替身，完全离线。"""
+
+    def __init__(self, outcomes=None):
+        self.outcomes = list(outcomes or [])
+        self.calls: list[dict] = []
+        self.closed = False
+
+    async def request(self, method, url, **kwargs):
+        self.calls.append({"method": method, "url": url, **kwargs})
+        outcome = self.outcomes.pop(0) if self.outcomes else FakeCurlResponse(200, HOME_HTML)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    async def close(self):
+        self.closed = True
+
+
 @pytest.fixture(autouse=True)
 def _no_real_sleep(monkeypatch):
     """把退避等待换成 no-op，避免测试真的睡觉。"""
@@ -470,12 +511,33 @@ def test_non_object_json_raises_upstream_error(text):
         run(client.search(b"img"))
 
 
-def test_home_page_non_200_raises_upstream_error():
+def test_home_page_403_maps_to_blocked_error():
     session = FakeSession(home_outcomes=[_FakeResponse(403, "blocked")])
-    client = make_client(session)
-    with pytest.raises(SoutubotUpstreamError):
+    client = make_client(session, max_retries=0)
+    with pytest.raises(SoutubotBlockedError):
         run(client.search(b"img"))
     assert session.api_calls == []  # 拿不到签名就不该发 API 请求
+
+
+def test_home_page_5xx_retries_then_raises_upstream_error():
+    session = FakeSession(
+        home_outcomes=[_FakeResponse(503, "oops"), _FakeResponse(503, "oops")]
+    )
+    client = make_client(session, max_retries=1)
+    with pytest.raises(SoutubotUpstreamError) as excinfo:
+        run(client.search(b"img"))
+    assert "HTTP 503" in str(excinfo.value)
+    assert len(session.home_calls) == 2
+    assert session.api_calls == []
+
+
+def test_home_page_unexpected_status_raises_without_retry():
+    session = FakeSession(home_outcomes=[_FakeResponse(404, "nope")])
+    client = make_client(session, max_retries=2)
+    with pytest.raises(SoutubotUpstreamError) as excinfo:
+        run(client.search(b"img"))
+    assert "HTTP 404" in str(excinfo.value)
+    assert len(session.home_calls) == 1
 
 
 def test_home_page_without_token_raises_upstream_error():
@@ -497,3 +559,336 @@ def test_close_does_not_close_injected_session():
     client = make_client(session)
     run(client.close())
     assert session.closed is False  # 外部传入的 session 不该被客户端关闭
+
+
+# ------------------------------------------------------- 403 诊断与分类（纯函数）
+
+
+def test_summarize_body_strips_markup_and_collapses_space():
+    html = (
+        "<html><head><style>body{color:red}</style>"
+        "<script>var a = 1;</script></head><body>\n\n"
+        "  Just a   moment...  <p>Enable JavaScript</p></body></html>"
+    )
+    assert summarize_body(html) == "Just a moment... Enable JavaScript"
+
+
+def test_summarize_body_truncates_with_ellipsis():
+    out = summarize_body("x" * 500, limit=50)
+    assert len(out) == 51 and out.endswith("\u2026")
+
+
+def test_summarize_body_handles_empty():
+    assert summarize_body("") == ""
+    assert summarize_body(None) == ""
+
+
+def test_collect_diagnostics_picks_useful_headers():
+    detail = collect_diagnostics(
+        403,
+        {
+            "CF-RAY": "9abc-SIN",
+            "cf-mitigated": "challenge",
+            "Server": "cloudflare",
+            "X-Irrelevant": "drop me",
+        },
+        "<html>Just a moment...</html>",
+    )
+    assert detail["status"] == 403
+    assert detail["cf-ray"] == "9abc-SIN"
+    assert detail["cf-mitigated"] == "challenge"
+    assert detail["server"] == "cloudflare"
+    assert "x-irrelevant" not in detail
+    assert detail["body"] == "Just a moment..."
+
+
+def test_collect_diagnostics_tolerates_missing_headers():
+    detail = collect_diagnostics(500)
+    assert detail == {"status": 500}
+
+
+def test_format_diagnostics_is_single_line_key_value():
+    text = format_diagnostics({"status": 403, "cf-ray": "abc"})
+    assert "status=403" in text and "cf-ray='abc'" in text
+    assert "\n" not in text
+
+
+@pytest.mark.parametrize(
+    ("headers", "body", "expected"),
+    [
+        ({"cf-mitigated": "challenge"}, "", "challenge"),
+        ({}, "<title>Just a moment...</title>", "challenge"),
+        ({}, "please enable JavaScript and cookies to continue", "challenge"),
+        ({}, "Sorry, you have been blocked", "waf"),
+        ({}, "Attention Required! | Cloudflare", "waf"),
+        ({}, "Error 1020 Ray ID", "waf"),
+        ({}, "This service is not available in your country", "geo"),
+        ({"server": "cloudflare"}, "whatever", "cloudflare"),
+        ({"CF-RAY": "abc-SIN"}, "whatever", "cloudflare"),
+        ({"server": "nginx"}, "plain forbidden", "origin"),
+        ({}, "", "origin"),
+    ],
+)
+def test_classify_forbidden(headers, body, expected):
+    assert classify_forbidden(headers, body) == expected
+
+
+def test_forbidden_message_mentions_ray_and_advice():
+    detail = collect_diagnostics(403, {"cf-ray": "9abc-SIN"}, "Just a moment...")
+    message = forbidden_message("challenge", detail, where="\u8bbf\u95ee\u9996\u9875")
+    assert message.startswith("\u8bbf\u95ee\u9996\u9875\u88ab\u62d2\u7edd")
+    assert "HTTP 403" in message
+    assert "9abc-SIN" in message
+    assert "tls_impersonate" in message
+
+
+def test_forbidden_message_switches_advice_behind_reverse_proxy():
+    detail = {"status": 403, "via": "reverse_proxy"}
+    message = forbidden_message("waf", detail, where="\u8bf7\u6c42\u63a5\u53e3")
+    assert "reverse_proxy_token" in message
+    assert "tls_impersonate" not in message
+
+
+# ------------------------------------------------------------------ 反代地址归一化
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", ""),
+        (None, ""),
+        ("   ", ""),
+        ("https://a.workers.dev", "https://a.workers.dev"),
+        ("https://a.workers.dev/", "https://a.workers.dev"),
+        ("  https://a.workers.dev///  ", "https://a.workers.dev"),
+        ("a.workers.dev", "https://a.workers.dev"),
+        ("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
+        ("https://a.workers.dev/soutubot", "https://a.workers.dev/soutubot"),
+        ("ftp://a.example.com", ""),
+        ("socks5://127.0.0.1:1080", ""),
+    ],
+)
+def test_normalize_reverse_proxy(raw, expected):
+    assert normalize_reverse_proxy(raw) == expected
+
+
+# ---------------------------------------------------------------- 传输层与反代
+
+
+def test_impersonate_mode_defaults():
+    client = SoutubotClient(session=FakeSession())
+    assert client.impersonate_mode == IMPERSONATE_AUTO
+    assert client.impersonate_target == DEFAULT_IMPERSONATE_TARGET
+    assert client.transport == "aiohttp"
+    assert client.endpoint == DEFAULT_BASE_URL
+    assert IMPERSONATE_MODES == (IMPERSONATE_OFF, IMPERSONATE_AUTO, IMPERSONATE_ON)
+    assert isinstance(curl_cffi_available(), bool)
+
+
+def test_impersonate_off_never_escalates():
+    client = SoutubotClient(session=FakeSession(), impersonate=IMPERSONATE_OFF)
+    assert client._can_escalate() is False
+    assert client._escalate() is False
+    assert client.transport == "aiohttp"
+
+
+def test_injected_session_disables_auto_escalation():
+    # 单元测试注入了 session，说明传输层由调用方掌管，不能偷偷换成 curl_cffi
+    client = SoutubotClient(session=FakeSession(), impersonate=IMPERSONATE_AUTO)
+    assert client._can_escalate() is False
+
+
+def test_custom_impersonate_target_is_passed_through():
+    client = SoutubotClient(
+        session=FakeSession(), impersonate="chrome124", curl_session=FakeCurlSession()
+    )
+    assert client.impersonate_target == "chrome124"
+    assert client.transport == "curl_cffi:chrome124"
+
+
+def test_reverse_proxy_rewrites_url_but_keeps_origin_headers():
+    import json
+
+    payload = make_payload()
+    session = FakeSession([_FakeResponse(200, json.dumps(payload))])
+    client = make_client(
+        session,
+        reverse_proxy="https://proxy.workers.dev/",
+        reverse_proxy_token="s3cret",
+    )
+    run(client.search(b"img"))
+
+    assert client.reverse_proxy == "https://proxy.workers.dev"
+    assert client.endpoint == "https://proxy.workers.dev"
+    assert session.home_calls[0]["url"] == "https://proxy.workers.dev/"
+    call = session.api_calls[0]
+    assert call["url"] == "https://proxy.workers.dev/api/search"
+    # 应用层看到的 Referer / Origin 仍然是站点自己
+    assert call["headers"]["Referer"] == "https://soutubot.moe/"
+    assert call["headers"]["Origin"] == "https://soutubot.moe"
+    assert call["headers"]["X-Proxy-Token"] == "s3cret"
+    assert session.home_calls[0]["headers"]["X-Proxy-Token"] == "s3cret"
+    assert "\u53cd\u4ee3 https://proxy.workers.dev" in client.describe_transport()
+
+
+def test_reverse_proxy_token_omitted_when_not_configured():
+    import json
+
+    session = FakeSession([_FakeResponse(200, json.dumps(make_payload()))])
+    client = make_client(session, reverse_proxy="proxy.workers.dev")
+    run(client.search(b"img"))
+    assert "X-Proxy-Token" not in session.api_calls[0]["headers"]
+
+
+def test_invalid_reverse_proxy_falls_back_to_direct():
+    import json
+
+    session = FakeSession([_FakeResponse(200, json.dumps(make_payload()))])
+    client = make_client(session, reverse_proxy="socks5://127.0.0.1:1080")
+    run(client.search(b"img"))
+    assert client.reverse_proxy == ""
+    assert session.api_calls[0]["url"] == "https://soutubot.moe/api/search"
+
+
+def test_reverse_proxy_disables_escalation_and_changes_advice():
+    session = FakeSession(home_outcomes=[_FakeResponse(403, "blocked by cloudflare")])
+    client = make_client(
+        session,
+        max_retries=0,
+        reverse_proxy="https://proxy.workers.dev",
+        curl_session=FakeCurlSession(),
+    )
+    assert client._can_escalate() is False
+    with pytest.raises(SoutubotBlockedError) as excinfo:
+        run(client.search(b"img"))
+    assert "reverse_proxy_token" in str(excinfo.value)
+    assert client.last_failure["via"] == "reverse_proxy"
+
+
+def test_extra_cookie_is_attached_to_both_requests():
+    import json
+
+    session = FakeSession([_FakeResponse(200, json.dumps(make_payload()))])
+    client = make_client(session, cookie="cf_clearance=abc")
+    run(client.search(b"img"))
+    assert session.home_calls[0]["headers"]["Cookie"] == "cf_clearance=abc"
+    assert session.api_calls[0]["headers"]["Cookie"] == "cf_clearance=abc"
+
+
+def test_last_failure_records_diagnostics_and_is_cleared_on_success():
+    import json
+
+    session = FakeSession(
+        [_FakeResponse(200, json.dumps(make_payload()))],
+        home_outcomes=[_FakeResponse(403, "Just a moment...", {"cf-ray": "9x-SIN"})],
+    )
+    client = make_client(session, max_retries=1)
+    run(client.search(b"img"))  # 第二次首页请求回落到 200
+    assert client.last_failure is None  # 成功后清空
+
+    session2 = FakeSession(home_outcomes=[_FakeResponse(403, "Just a moment...", {"cf-ray": "9x-SIN"})])
+    client2 = make_client(session2, max_retries=0)
+    with pytest.raises(SoutubotBlockedError) as excinfo:
+        run(client2.search(b"img"))
+    assert excinfo.value.kind == "challenge"
+    assert excinfo.value.detail["cf-ray"] == "9x-SIN"
+    assert client2.last_failure["transport"] == "aiohttp"
+    assert client2.last_failure["via"] == "direct"
+
+
+def test_api_403_maps_to_blocked_error():
+    session = FakeSession([_FakeResponse(403, "Sorry, you have been blocked")])
+    client = make_client(session, max_retries=0)
+    with pytest.raises(SoutubotBlockedError) as excinfo:
+        run(client.search(b"img"))
+    assert excinfo.value.kind == "waf"
+    assert "HTTP 403" in str(excinfo.value)
+
+
+def test_blocked_error_is_soutubot_error():
+    exc = SoutubotBlockedError("boom")
+    assert isinstance(exc, SoutubotError)
+    assert exc.kind == "unknown" and exc.detail == {}
+
+
+# ------------------------------------------------------------ curl_cffi 传输层
+
+
+def test_curl_transport_used_when_impersonate_on():
+    import json
+
+    curl = FakeCurlSession(
+        [
+            FakeCurlResponse(200, HOME_HTML),
+            FakeCurlResponse(200, json.dumps(make_payload())),
+        ]
+    )
+    session = FakeSession()
+    client = SoutubotClient(
+        session=session,
+        curl_session=curl,
+        impersonate=IMPERSONATE_ON,
+        max_retries=0,
+    )
+    result = run(client.search(b"img", factor=FACTOR_STRICT))
+    assert isinstance(result, SoutubotSearchResult)
+    assert session.api_calls == [] and session.home_calls == []
+    assert [call["method"] for call in curl.calls] == ["GET", "POST"]
+    assert curl.calls[0]["impersonate"] == DEFAULT_IMPERSONATE_TARGET
+    assert curl.calls[1]["data"].startswith(b"--")
+    assert "proxy" not in curl.calls[0]
+
+
+def test_curl_transport_passes_proxy_when_configured():
+    curl = FakeCurlSession([FakeCurlResponse(200, HOME_HTML)])
+    client = SoutubotClient(
+        session=FakeSession(),
+        curl_session=curl,
+        impersonate=IMPERSONATE_ON,
+        proxy="http://127.0.0.1:7890",
+    )
+    run(client._get_boot_token())
+    assert curl.calls[0]["proxy"] == "http://127.0.0.1:7890"
+
+
+def test_auto_escalates_to_curl_on_403_without_spending_retries():
+    import json
+
+    curl = FakeCurlSession(
+        [
+            FakeCurlResponse(200, HOME_HTML),
+            FakeCurlResponse(200, json.dumps(make_payload())),
+        ]
+    )
+    session = FakeSession(home_outcomes=[_FakeResponse(403, "Just a moment...")])
+    client = SoutubotClient(
+        session=session,
+        curl_session=curl,
+        impersonate=IMPERSONATE_AUTO,
+        max_retries=0,  # 升级传输层不占用重试预算
+    )
+    assert client.transport == "aiohttp"
+    result = run(client.search(b"img"))
+    assert isinstance(result, SoutubotSearchResult)
+    assert client.transport == f"curl_cffi:{DEFAULT_IMPERSONATE_TARGET}"
+    assert len(session.home_calls) == 1  # aiohttp 只试了一次
+    assert len(curl.calls) == 2
+    assert client._can_escalate() is False  # 只升级一次
+
+
+def test_curl_network_failure_maps_to_network_error():
+    curl = FakeCurlSession([RuntimeError("tls handshake failed")])
+    client = SoutubotClient(
+        session=FakeSession(), curl_session=curl, impersonate=IMPERSONATE_ON
+    )
+    with pytest.raises(SoutubotNetworkError):
+        run(client._get_boot_token())
+
+
+def test_close_does_not_close_injected_curl_session():
+    curl = FakeCurlSession()
+    client = SoutubotClient(
+        session=FakeSession(), curl_session=curl, impersonate=IMPERSONATE_ON
+    )
+    run(client.close())
+    assert curl.closed is False

@@ -18,6 +18,7 @@
 - [命令一览](#命令一览)
 - [让 bot 自己搜（LLM 工具）](#让-bot-自己搜llm-工具)
 - [配置说明](#配置说明)
+- [遇到 HTTP 403 怎么办](#遇到-http-403-怎么办)
 - [它是怎么工作的](#它是怎么工作的)
 - [常见问题](#常见问题)
 - [合规与风险提示](#合规与风险提示)
@@ -75,11 +76,19 @@ Pillow>=10.0
 
 两个依赖 AstrBot 本体通常都已自带；如有缺失，AstrBot 会在安装插件时自动补齐。
 
+还有一个**可选**依赖 `curl_cffi`。它只在你被 Cloudflare 拦成 HTTP 403 时才需要，
+不装也能正常用，详见[遇到 HTTP 403 怎么办](#遇到-http-403-怎么办)。
+
+```bash
+pip install curl_cffi
+```
+
 ### 环境要求
 
 - AstrBot `>=4.16, <5`
 - Python 3.10+
-- 服务器能访问 `soutubot.moe`（不通的话可以在配置里填 HTTP 代理）
+- 服务器能访问 `soutubot.moe`（不通的话可以填 HTTP 代理，或者用可选的
+  Cloudflare 反代，见[遇到 HTTP 403 怎么办](#遇到-http-403-怎么办)）
 
 ---
 
@@ -131,7 +140,7 @@ bot：这张图应该出自《[Fuyuno Mikan] Hajimete no Otetsudai》，
 | `搜本子 普通` | 本次强制用普通模式 |
 | `搜本子 结果 <ID>` | 用之前的结果 ID 重新查看结果（不重新上传图片） |
 | `搜本子 镜像` | 查看可用的镜像域名和当前设置 |
-| `搜本子 统计` | 查看调用次数、命中率、缓存命中等 |
+| `搜本子 统计` | 查看调用次数、命中率、缓存命中，以及当前的访问链路 |
 | `搜本子 帮助` | 显示使用说明 |
 
 `帮助`、`镜像`、`统计` 三个子命令是纯信息查询，不受白名单和冷却限制。
@@ -192,7 +201,7 @@ bot：这张图应该出自《[Fuyuno Mikan] Hajimete no Otetsudai》，
 
 ## 配置说明
 
-全部配置都在 WebUI 的插件配置面板里，共 33 项。下面按用途分组。
+全部配置都在 WebUI 的插件配置面板里，共 38 项。下面按用途分组。
 
 ### 搜索行为
 
@@ -268,6 +277,128 @@ bot：这张图应该出自《[Fuyuno Mikan] Hajimete no Otetsudai》，
 | `user_agent` | 空 | 留空用内置值。**UA 长度参与接口签名**，改动后插件会自动保持一致，但不建议乱改 |
 | `request_timeout` | `60` | 单次请求超时秒数。图大或网慢可以调高 |
 | `max_retries` | `2` | 失败重试次数。401 / 429 / 5xx 会自动重试 |
+
+### 绕过 Cloudflare（默认全关，被 403 时才需要）
+
+这五项都是为了应对 `HTTP 403`，正常能搜就不用管。填法见
+[遇到 HTTP 403 怎么办](#遇到-http-403-怎么办)。
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `tls_impersonate` | `auto` | 是否用真实浏览器的 TLS 指纹发请求。`auto` = 只在被 403 时自动切换；`on` = 一直用；`off` = 关闭。需要 `pip install curl_cffi` |
+| `extra_cookie` | 空 | 附加 Cookie，一般用来粘浏览器里的 `cf_clearance=...`。**和 IP + UA 绑定，换 IP 就失效** |
+| `reverse_proxy_url` | 空 | 你自己部署的 Cloudflare Worker 反代地址。填了之后所有 API 请求都走它 |
+| `reverse_proxy_token` | 空 | 反代口令，必须和 Worker 里的 `PROXY_TOKEN` 环境变量一致 |
+| `reverse_proxy_images` | `false` | 预览图是否也走反代（走 Worker 的 `/img` 路由）。只在 `send_preview_image` 开着时有意义 |
+
+---
+
+## 遇到 HTTP 403 怎么办
+
+如果 bot 回你这么一句：
+
+```
+❌ 搜图Bot酱暂时出错了：访问 soutubot 首页失败：HTTP 403
+```
+
+**这不是插件签名算错了，也不是你配置填错了。** soutubot.moe 挂在 Cloudflare 后面，
+403 意味着 Cloudflare 在门口就把你的服务器挡下了，请求压根没送到 soutubot。
+
+先分清两个长得很像的错误：
+
+| 状态码 | 真实含义 | 该看哪里 |
+| --- | --- | --- |
+| **403** | Cloudflare 拦住了你的 IP 或 TLS 指纹 | 就是本节 |
+| **401** | 请求到了 soutubot，但接口签名被拒 | 校准服务器时间，见[常见问题](#提示鉴权失败) |
+
+判断方法：机房 / VPS 的 IP 被拦是常态，家宽（住宅 IP）基本都能直连。
+插件在遇到 403 时会往日志里写一行诊断，包含 Cloudflare 的 `cf-ray`、`server`
+响应头和页面特征，用来区分「人机验证页」「WAF 规则命中」「地区封锁」。
+另外 `搜本子 统计` 里有一行「访问链路」，能看到当前实际走的是哪条路。
+
+下面三个方案，从省事到彻底。**建议按 A → B → C 的顺序试。**
+
+### 方案 A：换个出口 IP（最省事，成功率最高）
+
+- 在配置项 `proxy` 里填一个能直连的 HTTP 代理，比如 `http://127.0.0.1:7890`
+- 或者把 bot 挪到另一台机器 / 换一个 VPS 出口
+
+常见云厂商的 IDC 网段被 Cloudflare 拦得最狠，家宽和小众机房通常没事。
+
+### 方案 B：伪装浏览器 TLS 指纹
+
+Cloudflare 除了看 IP，还会看 TLS 握手指纹（JA3）。Python 默认的指纹和任何浏览器
+都不一样，很容易被判成脚本。装上 `curl_cffi` 就能用真实 Chrome 的指纹发请求：
+
+```bash
+pip install curl_cffi
+```
+
+然后看配置项 `tls_impersonate`：
+
+| 值 | 行为 |
+| --- | --- |
+| `auto`（默认） | 先用普通请求；**只有撞上 403 才自动切换到伪装指纹重试一次**，而且不占用 `max_retries` 的额度 |
+| `on` | 从第一个请求就用伪装指纹 |
+| `off` | 永不使用 |
+| 具体目标名，如 `chrome124` | 指定伪装成哪个浏览器版本 |
+
+没装 `curl_cffi` 的话，`auto` / `on` 会静默退回普通请求（不会报错），
+`搜本子 统计` 的「访问链路」里会标注「未安装 curl_cffi」。
+
+补充手段：如果你在自己浏览器里能正常打开 soutubot.moe，可以把浏览器的
+`cf_clearance` Cookie 粘到 `extra_cookie`（形如 `cf_clearance=xxxxx`）。
+但这个 Cookie 和 **IP + User-Agent 绑定**，换 IP 立刻失效，只能当临时救急。
+
+### 方案 C：自建 Cloudflare Worker 反代
+
+思路是让 Cloudflare 自己的服务器去访问 soutubot——插件只跟你的 Worker 说话。
+Worker 免费额度是每天 10 万次请求，个人 bot 用不完。
+
+> ⚠️ **先说清楚不确定的地方。** Worker 发出的子请求（Cloudflare → soutubot.moe）
+> 能否稳定通过 soutubot 侧的防护，我没办法在本地验证，只能你部署完实测。
+> 方案 A 和 B 是路径更确定的做法，C 是留给「IP 换不了、`curl_cffi` 也装不上」的情况。
+
+仓库里已经带好了脚本：[`deploy/cloudflare-worker.js`](deploy/cloudflare-worker.js)。
+
+**部署步骤**
+
+1. 打开 [dash.cloudflare.com](https://dash.cloudflare.com/) 并登录（没账号就免费注册一个，
+   **不需要**你有域名）。
+2. 左侧进 **Workers & Pages**（新版菜单叫 **Compute**）→ **Create** →
+   **Create Worker**。
+3. 给它起一个别人猜不到的名字，比如 `stb-relay-7f3a`，先点 **Deploy** 把骨架建出来。
+4. 点 **Edit code**，清空编辑器，把 `deploy/cloudflare-worker.js` 的**全部内容**
+   粘贴进去，右上角再点一次 **Deploy**。
+5. 回到这个 Worker 的 **Settings** → **Variables and Secrets** → **Add**：
+   - Type 选 **Secret**（Text 也行），Name 填 `PROXY_TOKEN`，
+     Value 填一串你自己随机生成的长口令。
+   - 保存后**再 Deploy 一次**，变量才会生效。
+
+   > 不设 `PROXY_TOKEN` 脚本也能跑，但那样你的 Worker 就是个公开代理，
+   > 谁都能白嫖你的额度。**强烈建议设。**
+6. 复制 Worker 的访问地址，形如 `https://stb-relay-7f3a.你的子域.workers.dev`。
+7. 回 AstrBot 的插件配置面板填：
+
+   | 配置项 | 填什么 |
+   | --- | --- |
+   | `reverse_proxy_url` | 第 6 步的地址（结尾不要带 `/`，带了插件也会自动去掉） |
+   | `reverse_proxy_token` | 第 5 步那串口令 |
+   | `reverse_proxy_images` | 想让预览图也走反代才开，否则保持 `false` |
+
+8. 保存并重载插件，发 `搜本子 统计`，「访问链路」那行应该变成
+   `aiohttp / 反代 https://...`。然后正常搜一次图验证。
+
+**几点提醒**
+
+- `*.workers.dev` 这个域名在部分网络环境下本身就不通。如果你有自己的域名，
+  可以在 Worker 的 **Settings → Domains & Routes** 绑一个自定义域，
+  拿它去填 `reverse_proxy_url`。
+- 走反代时插件**不会**再去伪装 TLS 指纹——你本机的指纹对 soutubot 已经不可见了，
+  伪装没有意义。
+- Worker 必须**原样透传 `User-Agent`**：接口签名里含 UA 的长度，改一个字符就变 401。
+  附带的脚本已经处理好，请不要去动那部分。
+- 反代只是换了个入口，**不解决** soutubot 本身宕机、或者你已经在业务层被限流的问题。
 
 ---
 
@@ -346,7 +477,9 @@ soutubot/
   mirrors.py           镜像域名与来源、语言的中文标签
   render.py            相似度分级、去重、标题清洗、消息与 LLM 摘要渲染
   utils.py             图片嗅探与预处理、配置读取、下载
-tests/                 313 个离线单元测试
+tests/                 362 个离线单元测试
+deploy/
+  cloudflare-worker.js Cloudflare Worker 反代脚本（可选，用于绕过 403）
 ```
 
 `soutubot/` 子包**不依赖 AstrBot**，可以单独拿去别的项目用。
@@ -381,6 +514,13 @@ Docker 容器的时间跟宿主机一致，所以要校准宿主机。
 
 被上游限流了，等一会儿。这也是插件默认把 `max_concurrency` 设成 `2`、
 `cooldown_seconds` 设成 `10` 的原因——请不要为了图快去调高。
+
+### 提示 HTTP 403
+
+Cloudflare 把你的服务器挡在门外了，跟插件配置无关。
+处理办法单独写了一节：[遇到 HTTP 403 怎么办](#遇到-http-403-怎么办)。
+
+**别把 403 和 401 搞混**：403 是没进门，401 是进了门但签名被拒（校时间就行）。
 
 ### 提示「连不上搜图Bot酱」
 
@@ -434,7 +574,7 @@ cd astrbot_plugin_soutubot_doujin
 python -m pytest tests -q
 ```
 
-313 个测试，全部离线（HTTP 层用假 session 注入），不会打真实接口，
+362 个测试，全部离线（HTTP 层用假 session 注入），不会打真实接口，
 1 秒左右跑完。
 
 覆盖范围包括：签名算法（含已知向量）、令牌提取、multipart 封包、

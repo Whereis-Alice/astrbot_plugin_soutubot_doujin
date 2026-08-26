@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from urllib.parse import urlencode
 from typing import Any
 
 import aiohttp
@@ -32,18 +33,22 @@ from .soutubot import (
     FACTOR_STRICT,
     ImageTooLargeError,
     SoutubotAuthError,
+    SoutubotBlockedError,
     SoutubotClient,
     SoutubotError,
     SoutubotNetworkError,
     SoutubotRateLimitError,
     SoutubotSearchResult,
     SoutubotUpstreamError,
+    curl_cffi_available,
     dedupe_matches,
     describe_mirrors,
     fetch_image_bytes,
+    format_diagnostics,
     format_llm_summary,
     format_plain_report,
     local_path_from_reference,
+    normalize_reverse_proxy,
     prepare_image,
     read_bool,
     read_int,
@@ -129,6 +134,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "user_agent": "",
     "request_timeout": 60,
     "max_retries": 2,
+    "reverse_proxy_url": "",
+    "reverse_proxy_token": "",
+    "reverse_proxy_images": False,
+    "tls_impersonate": "auto",
+    "extra_cookie": "",
 }
 
 HELP_TEXT = "\n".join(
@@ -276,6 +286,13 @@ class SoutubotDoujinPlugin(Star):
             self.request_timeout, 60, minimum=10, maximum=300
         )
         self.max_retries = read_int(self.max_retries, 2, minimum=0, maximum=5)
+        self.reverse_proxy_url = normalize_reverse_proxy(
+            read_str(self.reverse_proxy_url, "")
+        )
+        self.reverse_proxy_token = read_str(self.reverse_proxy_token, "")
+        self.reverse_proxy_images = read_bool(self.reverse_proxy_images, False)
+        self.tls_impersonate = read_str(self.tls_impersonate, "auto").lower()
+        self.extra_cookie = read_str(self.extra_cookie, "")
 
         self.mirrors: dict[str, Any] = {
             "nhentai": read_str(self.mirror_nhentai, "nhentai.net"),
@@ -348,6 +365,13 @@ class SoutubotDoujinPlugin(Star):
                 timeout=float(self.request_timeout),
                 proxy=self.proxy,
                 max_retries=self.max_retries,
+                reverse_proxy=self.reverse_proxy_url,
+                reverse_proxy_token=self.reverse_proxy_token,
+                impersonate=self.tls_impersonate,
+                cookie=self.extra_cookie,
+            )
+            logger.info(
+                "[%s] soutubot 链路：%s", PLUGIN_ID, self._client.describe_transport()
             )
         return self._client
 
@@ -410,6 +434,7 @@ class SoutubotDoujinPlugin(Star):
                 f"默认模式：{'严格' if self.strict_mode_default else '普通'}"
                 f"　缓存：{'开' if self.cache_enabled else '关'}"
                 f"　并发上限：{self.max_concurrency}",
+                f"访问链路：{self._describe_route()}",
             ]
         )
 
@@ -693,6 +718,15 @@ class SoutubotDoujinPlugin(Star):
     def _friendly_error(exc: Exception) -> str:
         if isinstance(exc, ImageTooLargeError):
             return "❌ 图片太大了，请换一张小一点的图（建议 10MB 以内）。"
+        if isinstance(exc, SoutubotBlockedError):
+            # 403 属于「请求没进到应用层」，文案里已经带了原因与处置建议
+            logger.warning(
+                "[%s] 被拦截（%s）：%s",
+                PLUGIN_ID,
+                exc.kind,
+                format_diagnostics(exc.detail),
+            )
+            return f"❌ {exc}"
         if isinstance(exc, SoutubotAuthError):
             return (
                 "❌ 搜图Bot酱拒绝了这次请求（鉴权失败）。\n"
@@ -762,6 +796,28 @@ class SoutubotDoujinPlugin(Star):
 
         await event.send(event.plain_result(text))
 
+    def _describe_route(self) -> str:
+        """一行文本描述当前请求链路，供 `搜本子 统计` 展示。"""
+        if self._client is not None:
+            route = self._client.describe_transport()
+        elif self.reverse_proxy_url:
+            route = f"aiohttp / 反代 {self.reverse_proxy_url}"
+        else:
+            route = "aiohttp / 直连 soutubot.moe"
+        if self.tls_impersonate != "off" and not curl_cffi_available():
+            route += "（未安装 curl_cffi，无法伪装指纹）"
+        return route
+
+    def _proxy_image_url(self, url: str) -> str:
+        """预览图可选地也走反代，避免图片域名同样被 Cloudflare 拦。"""
+        raw = read_str(url, "")
+        if not raw or not self.reverse_proxy_url or not self.reverse_proxy_images:
+            return raw
+        query = urlencode({"url": raw})
+        if self.reverse_proxy_token:
+            query += "&" + urlencode({"token": self.reverse_proxy_token})
+        return f"{self.reverse_proxy_url}/img?{query}"
+
     async def _send_previews(
         self, event: AstrMessageEvent, result: SoutubotSearchResult
     ) -> None:
@@ -770,7 +826,7 @@ class SoutubotDoujinPlugin(Star):
             return
         matches = dedupe_matches(result.matches, min_similarity=self.min_similarity)
         urls = [
-            m.preview_image_url
+            self._proxy_image_url(m.preview_image_url)
             for m in matches[: self.max_preview_images]
             if read_str(getattr(m, "preview_image_url", ""))
         ]
