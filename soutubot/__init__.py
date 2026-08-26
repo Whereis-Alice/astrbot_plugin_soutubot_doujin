@@ -27,7 +27,6 @@ from .client import (
     extract_boot_token,
     forbidden_message,
     format_diagnostics,
-    normalize_reverse_proxy,
     summarize_body,
 )
 from .mirrors import (
@@ -117,7 +116,6 @@ __all__ = [
     "mirror_host",
     "mirror_name",
     "normalize_mirror_choice",
-    "normalize_reverse_proxy",
     "prepare_image",
     "read_bool",
     "read_float",

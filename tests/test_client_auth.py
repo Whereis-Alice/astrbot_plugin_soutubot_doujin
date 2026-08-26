@@ -34,7 +34,6 @@ from soutubot.client import (
     extract_boot_token,
     forbidden_message,
     format_diagnostics,
-    normalize_reverse_proxy,
     summarize_body,
 )
 from soutubot.models import SoutubotSearchResult
@@ -642,37 +641,13 @@ def test_forbidden_message_mentions_ray_and_advice():
     assert "tls_impersonate" in message
 
 
-def test_forbidden_message_switches_advice_behind_reverse_proxy():
-    detail = {"status": 403, "via": "reverse_proxy"}
-    message = forbidden_message("waf", detail, where="\u8bf7\u6c42\u63a5\u53e3")
-    assert "reverse_proxy_token" in message
+def test_forbidden_message_waf_advice_points_at_proxy_option():
+    message = forbidden_message("waf", {"status": 403}, where="\u8bf7\u6c42\u63a5\u53e3")
+    assert "proxy" in message
     assert "tls_impersonate" not in message
 
 
-# ------------------------------------------------------------------ 反代地址归一化
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("", ""),
-        (None, ""),
-        ("   ", ""),
-        ("https://a.workers.dev", "https://a.workers.dev"),
-        ("https://a.workers.dev/", "https://a.workers.dev"),
-        ("  https://a.workers.dev///  ", "https://a.workers.dev"),
-        ("a.workers.dev", "https://a.workers.dev"),
-        ("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
-        ("https://a.workers.dev/soutubot", "https://a.workers.dev/soutubot"),
-        ("ftp://a.example.com", ""),
-        ("socks5://127.0.0.1:1080", ""),
-    ],
-)
-def test_normalize_reverse_proxy(raw, expected):
-    assert normalize_reverse_proxy(raw) == expected
-
-
-# ---------------------------------------------------------------- 传输层与反代
+# ------------------------------------------------------------------ 传输层伪装
 
 
 def test_impersonate_mode_defaults():
@@ -706,63 +681,26 @@ def test_custom_impersonate_target_is_passed_through():
     assert client.transport == "curl_cffi:chrome124"
 
 
-def test_reverse_proxy_rewrites_url_but_keeps_origin_headers():
+def test_requests_always_target_the_site_directly():
     import json
 
-    payload = make_payload()
-    session = FakeSession([_FakeResponse(200, json.dumps(payload))])
-    client = make_client(
-        session,
-        reverse_proxy="https://proxy.workers.dev/",
-        reverse_proxy_token="s3cret",
-    )
+    session = FakeSession([_FakeResponse(200, json.dumps(make_payload()))])
+    client = make_client(session)
     run(client.search(b"img"))
 
-    assert client.reverse_proxy == "https://proxy.workers.dev"
-    assert client.endpoint == "https://proxy.workers.dev"
-    assert session.home_calls[0]["url"] == "https://proxy.workers.dev/"
+    assert client.endpoint == "https://soutubot.moe"
+    assert session.home_calls[0]["url"] == "https://soutubot.moe/"
     call = session.api_calls[0]
-    assert call["url"] == "https://proxy.workers.dev/api/search"
-    # 应用层看到的 Referer / Origin 仍然是站点自己
+    assert call["url"] == "https://soutubot.moe/api/search"
     assert call["headers"]["Referer"] == "https://soutubot.moe/"
     assert call["headers"]["Origin"] == "https://soutubot.moe"
-    assert call["headers"]["X-Proxy-Token"] == "s3cret"
-    assert session.home_calls[0]["headers"]["X-Proxy-Token"] == "s3cret"
-    assert "\u53cd\u4ee3 https://proxy.workers.dev" in client.describe_transport()
+    assert "X-Proxy-Token" not in call["headers"]
+    assert "\u76f4\u8fde soutubot.moe" in client.describe_transport()
 
 
-def test_reverse_proxy_token_omitted_when_not_configured():
-    import json
-
-    session = FakeSession([_FakeResponse(200, json.dumps(make_payload()))])
-    client = make_client(session, reverse_proxy="proxy.workers.dev")
-    run(client.search(b"img"))
-    assert "X-Proxy-Token" not in session.api_calls[0]["headers"]
-
-
-def test_invalid_reverse_proxy_falls_back_to_direct():
-    import json
-
-    session = FakeSession([_FakeResponse(200, json.dumps(make_payload()))])
-    client = make_client(session, reverse_proxy="socks5://127.0.0.1:1080")
-    run(client.search(b"img"))
-    assert client.reverse_proxy == ""
-    assert session.api_calls[0]["url"] == "https://soutubot.moe/api/search"
-
-
-def test_reverse_proxy_disables_escalation_and_changes_advice():
-    session = FakeSession(home_outcomes=[_FakeResponse(403, "blocked by cloudflare")])
-    client = make_client(
-        session,
-        max_retries=0,
-        reverse_proxy="https://proxy.workers.dev",
-        curl_session=FakeCurlSession(),
-    )
-    assert client._can_escalate() is False
-    with pytest.raises(SoutubotBlockedError) as excinfo:
-        run(client.search(b"img"))
-    assert "reverse_proxy_token" in str(excinfo.value)
-    assert client.last_failure["via"] == "reverse_proxy"
+def test_describe_transport_reports_http_proxy():
+    client = make_client(FakeSession(), proxy="http://127.0.0.1:7890")
+    assert "HTTP \u4ee3\u7406" in client.describe_transport()
 
 
 def test_extra_cookie_is_attached_to_both_requests():
@@ -793,7 +731,7 @@ def test_last_failure_records_diagnostics_and_is_cleared_on_success():
     assert excinfo.value.kind == "challenge"
     assert excinfo.value.detail["cf-ray"] == "9x-SIN"
     assert client2.last_failure["transport"] == "aiohttp"
-    assert client2.last_failure["via"] == "direct"
+    assert "via" not in client2.last_failure
 
 
 def test_api_403_maps_to_blocked_error():

@@ -218,36 +218,23 @@ _FORBIDDEN_ADVICE = {
     ),
     "waf": (
         "Cloudflare WAF 直接拦掉了这个来源 IP。"
-        "机房 / VPS / 公共代理 IP 很常见：换一个干净的出口，"
-        "或按 README 部署 Cloudflare Worker 反向代理后填入 reverse_proxy_url。"
+        "机房 / VPS / 公共代理 IP 很常见：请在配置项 proxy 里填一个干净出口的代理，"
+        "或把插件换到家用宽带等信誉正常的网络上运行。"
     ),
     "geo": "站点或 Cloudflare 屏蔽了当前地区，请通过代理访问。",
     "cloudflare": (
         "被 Cloudflare 拒绝。先试着把 tls_impersonate 设为 auto 或 on；"
-        "无效则更换出口 IP、配置代理，"
-        "或按 README 部署 Cloudflare Worker 反向代理（reverse_proxy_url）。"
+        "无效则说明是出口 IP 的问题，请在配置项 proxy 里填一个干净出口的代理，"
+        "或把插件换到信誉正常的网络上运行。"
     ),
     "origin": "站点主动拒绝了这次请求，可能是接口结构或防护策略变了。",
 }
 
 
-#: 已经在走反向代理时，建议要换一套说法：本机指纹此时对 soutubot 不可见
-_PROXY_FORBIDDEN_ADVICE = (
-    "请求是经反向代理发出的，403 来自代理本身或代理的上游。请依次检查："
-    "① 反代地址填写正确且已部署成功；"
-    "② 若设置了访问口令，插件里的 reverse_proxy_token 必须与反代一致；"
-    "③ 反代必须把 soutubot 原始的 User-Agent 透传出去，否则签名会被判无效；"
-    "④ 反代所在节点自身可能也被拦，可换个部署区域或改回直连。"
-)
-
-
 def forbidden_message(kind: str, detail: dict[str, Any], *, where: str) -> str:
     """组装 403 的中文错误文案，带上 CF-RAY 方便排查与反馈。"""
     info = detail or {}
-    if info.get("via") == "reverse_proxy":
-        advice = _PROXY_FORBIDDEN_ADVICE
-    else:
-        advice = _FORBIDDEN_ADVICE.get(kind, _FORBIDDEN_ADVICE["cloudflare"])
+    advice = _FORBIDDEN_ADVICE.get(kind, _FORBIDDEN_ADVICE["cloudflare"])
     ray = info.get("cf-ray")
     tail = f"（CF-RAY {ray}）" if ray else ""
     return f"{where}被拒绝：HTTP 403{tail}。{advice}"
@@ -279,31 +266,12 @@ class _HttpResponse:
         self.text = text or ""
 
 
-# ------------------------------------------------------------- 反向代理（自建/CF）
-
-def normalize_reverse_proxy(url: str) -> str:
-    """把用户填写的反代地址归一化成 `https://host[/path]`（无尾斜杠）。
-
-    容错处理：省略协议时补 `https://`；填了非 http(s) 协议则视为无效，返回空串
-    （等价于关闭反代），避免一处填错就让整个插件不可用。
-    """
-    text = str(url or "").strip()
-    if not text:
-        return ""
-    if "://" not in text:
-        text = "https://" + text
-    if not text.startswith(("http://", "https://")):
-        return ""
-    return text.rstrip("/")
-
-
 class SoutubotClient:
     """线程/协程安全的 soutubot.moe 客户端。
 
     - 自动获取并缓存签名参数，401 时刷新签名重试
     - 429 / 5xx 指数退避重试
     - 403（Cloudflare 拦截）单独分类并给出可执行建议
-    - 可选走反向代理（Cloudflare Worker / 自建 Nginx）
     - 可选用 curl_cffi 伪装真实浏览器 TLS 指纹
     """
 
@@ -318,8 +286,6 @@ class SoutubotClient:
         session: aiohttp.ClientSession | None = None,
         impersonate: str = IMPERSONATE_AUTO,
         cookie: str = "",
-        reverse_proxy: str = "",
-        reverse_proxy_token: str = "",
         curl_session: Any = None,
     ) -> None:
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
@@ -328,10 +294,6 @@ class SoutubotClient:
         self.proxy = proxy or None
         self.max_retries = max(0, int(max_retries))
         self.cookie = str(cookie or "").strip()
-
-        # 反向代理：请求打到反代，但 Referer / Origin 仍然是 soutubot 本身
-        self.reverse_proxy = normalize_reverse_proxy(reverse_proxy)
-        self.reverse_proxy_token = str(reverse_proxy_token or "").strip()
 
         # TLS 指纹伪装
         mode = str(impersonate or IMPERSONATE_AUTO).strip().lower() or IMPERSONATE_AUTO
@@ -370,21 +332,16 @@ class SoutubotClient:
     @property
     def endpoint(self) -> str:
         """请求实际发往的地址前缀。"""
-        return self.reverse_proxy or self.base_url
+        return self.base_url
 
     def describe_transport(self) -> str:
         """一行人类可读的链路描述，用于 `搜本子 统计`。"""
-        route = "直连 soutubot.moe"
-        if self.reverse_proxy:
-            route = f"反代 {self.reverse_proxy}"
-        elif self.proxy:
-            route = "HTTP 代理"
+        route = "HTTP 代理" if self.proxy else "直连 soutubot.moe"
         return f"{self.transport} / {route}"
 
     def _can_escalate(self) -> bool:
         """是否还能把传输层升级到 curl_cffi。"""
-        if self._curl_active or self.reverse_proxy:
-            # 走反代时，本机 TLS 指纹对 soutubot 不可见，升级没有意义
+        if self._curl_active:
             return False
         if self.impersonate_mode != IMPERSONATE_AUTO:
             return False
@@ -447,9 +404,6 @@ class SoutubotClient:
     def _decorate(self, headers: dict[str, str]) -> dict[str, str]:
         if self.cookie:
             headers["Cookie"] = self.cookie
-        if self.reverse_proxy and self.reverse_proxy_token:
-            # 让反代能校验来源，避免被别人当公共代理白嫖
-            headers["X-Proxy-Token"] = self.reverse_proxy_token
         return headers
 
     def _home_headers(self) -> dict[str, str]:
@@ -484,7 +438,6 @@ class SoutubotClient:
     def _diagnose(self, status: int, headers: Any, text: str) -> dict[str, Any]:
         detail = collect_diagnostics(status, headers, text)
         detail["transport"] = self.transport
-        detail["via"] = "reverse_proxy" if self.reverse_proxy else "direct"
         self.last_failure = detail
         return detail
 

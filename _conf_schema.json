@@ -25,7 +25,13 @@
         "description": "是否在结果中附带站点链接",
         "type": "bool",
         "default": true,
-        "hint": "部分平台会因外链而拦截消息，被吞消息时可以关掉。"
+        "hint": "总开关。关掉后每条候选的 nhentai / E-Hentai 链接和「完整结果」链接都不再显示。部分平台会因外链而拦截消息，被吞消息时可以关掉。"
+      },
+      "show_result_page_link": {
+        "description": "是否显示「完整结果」链接",
+        "type": "bool",
+        "default": true,
+        "hint": "只控制结果末尾那一行 https://soutubot.moe/results/xxxxxxxx。只想去掉这一行、但保留每条候选的链接时关掉它。show_urls 关掉时这一行也一并隐藏。"
       },
       "show_language": {
         "description": "是否显示语言标签",
@@ -216,24 +222,6 @@
         "type": "int",
         "default": 2,
         "hint": "签名过期（401）、限流（429）和 5xx 会自动重试。"
-      },
-      "reverse_proxy_url": {
-        "description": "反向代理地址（推荐用于解决 403）",
-        "type": "string",
-        "default": "",
-        "hint": "填了之后所有请求都发给这个地址，由它转发到 soutubot.moe，用来绕过 Cloudflare 对本机 IP 的拦截。例如 https://soutubot.你的名字.workers.dev。部署方法见 README「被 Cloudflare 拦了（403）怎么办」。留空表示直连。"
-      },
-      "reverse_proxy_token": {
-        "description": "反向代理访问口令",
-        "type": "string",
-        "default": "",
-        "hint": "与反代里设置的 PROXY_TOKEN 保持一致，避免你的反代被别人白用。反代没设口令就留空。"
-      },
-      "reverse_proxy_images": {
-        "description": "预览图也走反向代理",
-        "type": "bool",
-        "default": false,
-        "hint": "预览图在另一个域名上。如果图片发不出来（同样被拦），打开这个开关。需要反代已部署 /img 路由。"
       },
       "tls_impersonate": {
         "description": "浏览器指纹伪装",

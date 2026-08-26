@@ -1,7 +1,7 @@
 name: astrbot_plugin_soutubot_doujin
 display_name: 搜本子（soutubot.moe）
 desc: 基于搜图Bot酱（soutubot.moe）的本子以图搜书插件，支持命令搜索与 LLM 工具自主调用
-version: v1.0.1
+version: v1.0.2
 author: Huli3
 repo: https://github.com/Whereis-Alice/astrbot_plugin_soutubot_doujin
 astrbot_version: ">=4.16,<5"

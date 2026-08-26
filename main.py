@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from urllib.parse import urlencode
 from typing import Any
 
 import aiohttp
@@ -48,7 +47,6 @@ from .soutubot import (
     format_llm_summary,
     format_plain_report,
     local_path_from_reference,
-    normalize_reverse_proxy,
     prepare_image,
     read_bool,
     read_int,
@@ -105,6 +103,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_results": 5,
     "min_similarity": 28,
     "show_urls": True,
+    "show_result_page_link": True,
     "show_language": True,
     "mirror_nhentai": "nhentai.net",
     "mirror_ehentai": "e-hentai.org",
@@ -134,9 +133,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "user_agent": "",
     "request_timeout": 60,
     "max_retries": 2,
-    "reverse_proxy_url": "",
-    "reverse_proxy_token": "",
-    "reverse_proxy_images": False,
     "tls_impersonate": "auto",
     "extra_cookie": "",
 }
@@ -239,6 +235,7 @@ class SoutubotDoujinPlugin(Star):
             read_int(self.min_similarity, 28, minimum=0, maximum=100)
         )
         self.show_urls = read_bool(self.show_urls, True)
+        self.show_result_page_link = read_bool(self.show_result_page_link, True)
         self.show_language = read_bool(self.show_language, True)
         self.wait_timeout_seconds = read_int(
             self.wait_timeout_seconds, 60, minimum=5, maximum=600
@@ -286,11 +283,6 @@ class SoutubotDoujinPlugin(Star):
             self.request_timeout, 60, minimum=10, maximum=300
         )
         self.max_retries = read_int(self.max_retries, 2, minimum=0, maximum=5)
-        self.reverse_proxy_url = normalize_reverse_proxy(
-            read_str(self.reverse_proxy_url, "")
-        )
-        self.reverse_proxy_token = read_str(self.reverse_proxy_token, "")
-        self.reverse_proxy_images = read_bool(self.reverse_proxy_images, False)
         self.tls_impersonate = read_str(self.tls_impersonate, "auto").lower()
         self.extra_cookie = read_str(self.extra_cookie, "")
 
@@ -365,8 +357,6 @@ class SoutubotDoujinPlugin(Star):
                 timeout=float(self.request_timeout),
                 proxy=self.proxy,
                 max_retries=self.max_retries,
-                reverse_proxy=self.reverse_proxy_url,
-                reverse_proxy_token=self.reverse_proxy_token,
                 impersonate=self.tls_impersonate,
                 cookie=self.extra_cookie,
             )
@@ -800,23 +790,13 @@ class SoutubotDoujinPlugin(Star):
         """一行文本描述当前请求链路，供 `搜本子 统计` 展示。"""
         if self._client is not None:
             route = self._client.describe_transport()
-        elif self.reverse_proxy_url:
-            route = f"aiohttp / 反代 {self.reverse_proxy_url}"
+        elif self.proxy:
+            route = "aiohttp / HTTP 代理"
         else:
             route = "aiohttp / 直连 soutubot.moe"
         if self.tls_impersonate != "off" and not curl_cffi_available():
             route += "（未安装 curl_cffi，无法伪装指纹）"
         return route
-
-    def _proxy_image_url(self, url: str) -> str:
-        """预览图可选地也走反代，避免图片域名同样被 Cloudflare 拦。"""
-        raw = read_str(url, "")
-        if not raw or not self.reverse_proxy_url or not self.reverse_proxy_images:
-            return raw
-        query = urlencode({"url": raw})
-        if self.reverse_proxy_token:
-            query += "&" + urlencode({"token": self.reverse_proxy_token})
-        return f"{self.reverse_proxy_url}/img?{query}"
 
     async def _send_previews(
         self, event: AstrMessageEvent, result: SoutubotSearchResult
@@ -826,7 +806,7 @@ class SoutubotDoujinPlugin(Star):
             return
         matches = dedupe_matches(result.matches, min_similarity=self.min_similarity)
         urls = [
-            self._proxy_image_url(m.preview_image_url)
+            read_str(m.preview_image_url, "")
             for m in matches[: self.max_preview_images]
             if read_str(getattr(m, "preview_image_url", ""))
         ]
@@ -851,7 +831,7 @@ class SoutubotDoujinPlugin(Star):
             max_results=self.max_results,
             min_similarity=self.min_similarity,
             show_language=self.show_language,
-            include_result_link=self.show_urls,
+            include_result_link=self.show_urls and self.show_result_page_link,
             base_url=self.base_url,
         )
         if cached:
@@ -1118,7 +1098,11 @@ class SoutubotDoujinPlugin(Star):
             mirrors=self.mirrors,
             max_results=limit,
             min_similarity=self.min_similarity,
-            base_url=self.base_url if self.show_urls else "",
+            base_url=(
+                self.base_url
+                if self.show_urls and self.show_result_page_link
+                else ""
+            ),
             include_urls=self.llm_tool_include_urls,
         )
         if cached:

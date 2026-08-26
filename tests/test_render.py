@@ -307,6 +307,16 @@ def test_plain_report_omits_link_when_disabled():
     assert "完整结果" not in text
 
 
+def test_plain_report_no_results_branch_omits_link_when_disabled():
+    rows = [make_row(NHENTAI_ROW, similarity=12.34)]
+    text = format_plain_report(
+        result_of(rows), include_result_link=False, base_url="https://soutubot.moe"
+    )
+    assert "\u6ca1\u6709\u627e\u5230\u76f8\u4f3c\u5ea6\u8db3\u591f\u9ad8\u7684\u672c\u5b50" in text
+    assert "\u5b8c\u6574\u7ed3\u679c" not in text
+    assert "https://soutubot.moe/results/" not in text
+
+
 def test_plain_report_survives_degenerate_rows():
     rows = [
         {"source": "hitomi", "similarity": 99.0},
@@ -343,6 +353,15 @@ def test_llm_summary_low_confidence_disclaimer():
     text = format_llm_summary(result)
     assert "不要断言" in text
     assert "可以作为答案给出" not in text
+
+
+def test_llm_summary_omits_result_page_link_without_base_url():
+    # main.py \u5173\u6389\u300c\u5b8c\u6574\u7ed3\u679c\u94fe\u63a5\u300d\u65f6\u5c31\u662f\u4f20\u7a7a base_url
+    result = result_of([NHENTAI_ROW])
+    text = format_llm_summary(result, base_url="")
+    assert "\u5b8c\u6574\u7ed3\u679c\u9875" not in text
+    assert "https://soutubot.moe/results/" not in text
+    assert "\u94fe\u63a5 https://nhentai.net/g/518943/10" in text
 
 
 def test_llm_summary_without_urls():

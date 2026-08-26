@@ -50,6 +50,9 @@
 🟢（高可信）表示这条基本可以采信，🟡（仅供参考）表示只能当线索看。
 相似度低于阈值的结果会被直接丢掉，同一本书也只保留最高分的那一页，不会刷屏。
 
+最后那行「完整结果：...」是 soutubot 的结果页链接，不想让它出现，把配置项
+`show_result_page_link` 关掉即可。
+
 ---
 
 ## 安装
@@ -87,8 +90,8 @@ pip install curl_cffi
 
 - AstrBot `>=4.16, <5`
 - Python 3.10+
-- 服务器能访问 `soutubot.moe`（不通的话可以填 HTTP 代理，或者用可选的
-  Cloudflare 反代，见[遇到 HTTP 403 怎么办](#遇到-http-403-怎么办)）
+- 服务器能访问 `soutubot.moe`（不通的话在配置项 `proxy` 里填一个 HTTP 代理，
+  见[遇到 HTTP 403 怎么办](#遇到-http-403-怎么办)）
 
 ---
 
@@ -201,7 +204,7 @@ bot：这张图应该出自《[Fuyuno Mikan] Hajimete no Otetsudai》，
 
 ## 配置说明
 
-全部配置都在 WebUI 的插件配置面板里，共 38 项。下面按用途分组。
+全部配置都在 WebUI 的插件配置面板里，共 36 项。下面按用途分组。
 
 ### 搜索行为
 
@@ -210,7 +213,8 @@ bot：这张图应该出自《[Fuyuno Mikan] Hajimete no Otetsudai》，
 | `strict_mode_default` | `false` | 默认是否用严格模式。单次可用 `搜本子 严格` 覆盖 |
 | `max_results` | `5` | 命令回复最多显示几条候选。建议 3–8，`0` 表示不限 |
 | `min_similarity` | `28` | 可信度下限（百分比）。低于此值直接丢弃。**28 是官网默认过滤线，调低会明显增加误报** |
-| `show_urls` | `true` | 结果里是否附带站点链接。有平台会因外链吞消息，被吞就关掉 |
+| `show_urls` | `true` | 链接总开关。关掉后结果里不带任何链接（书源链接和结果页链接一起没）。有平台会因外链吞消息，被吞就关掉 |
+| `show_result_page_link` | `true` | 是否显示结尾那行「完整结果：https://soutubot.moe/results/...」。只想去掉这一行、保留书源链接就关它 |
 | `show_language` | `true` | 是否显示「日语 / 简体中文」这类语言标签，便于判断是不是汉化版 |
 
 ### 站点镜像
@@ -272,24 +276,21 @@ bot：这张图应该出自《[Fuyuno Mikan] Hajimete no Otetsudai》，
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `base_url` | `https://soutubot.moe` | 站点地址。有自建反代可以填这里 |
+| `base_url` | `https://soutubot.moe` | 站点地址。有可用的自建镜像可以填这里 |
 | `proxy` | 空 | HTTP 代理，如 `http://127.0.0.1:7890`。留空直连 |
 | `user_agent` | 空 | 留空用内置值。**UA 长度参与接口签名**，改动后插件会自动保持一致，但不建议乱改 |
 | `request_timeout` | `60` | 单次请求超时秒数。图大或网慢可以调高 |
 | `max_retries` | `2` | 失败重试次数。401 / 429 / 5xx 会自动重试 |
 
-### 绕过 Cloudflare（默认全关，被 403 时才需要）
+### 绕过 Cloudflare（默认不用管，被 403 时才需要）
 
-这五项都是为了应对 `HTTP 403`，正常能搜就不用管。填法见
+这两项都是为了应对 `HTTP 403`，正常能搜就不用动。填法见
 [遇到 HTTP 403 怎么办](#遇到-http-403-怎么办)。
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `tls_impersonate` | `auto` | 是否用真实浏览器的 TLS 指纹发请求。`auto` = 只在被 403 时自动切换；`on` = 一直用；`off` = 关闭。需要 `pip install curl_cffi` |
 | `extra_cookie` | 空 | 附加 Cookie，一般用来粘浏览器里的 `cf_clearance=...`。**和 IP + UA 绑定，换 IP 就失效** |
-| `reverse_proxy_url` | 空 | 你自己部署的 Cloudflare Worker 反代地址。填了之后所有 API 请求都走它 |
-| `reverse_proxy_token` | 空 | 反代口令，必须和 Worker 里的 `PROXY_TOKEN` 环境变量一致 |
-| `reverse_proxy_images` | `false` | 预览图是否也走反代（走 Worker 的 `/img` 路由）。只在 `send_preview_image` 开着时有意义 |
 
 ---
 
@@ -316,7 +317,7 @@ bot：这张图应该出自《[Fuyuno Mikan] Hajimete no Otetsudai》，
 响应头和页面特征，用来区分「人机验证页」「WAF 规则命中」「地区封锁」。
 另外 `搜本子 统计` 里有一行「访问链路」，能看到当前实际走的是哪条路。
 
-下面三个方案，从省事到彻底。**建议按 A → B → C 的顺序试。**
+下面两个方案，**建议按 A → B 的顺序试**。
 
 ### 方案 A：换个出口 IP（最省事，成功率最高）
 
@@ -350,55 +351,12 @@ pip install curl_cffi
 `cf_clearance` Cookie 粘到 `extra_cookie`（形如 `cf_clearance=xxxxx`）。
 但这个 Cookie 和 **IP + User-Agent 绑定**，换 IP 立刻失效，只能当临时救急。
 
-### 方案 C：自建 Cloudflare Worker 反代
+如果这两条都试过还是 403，说明你这台机器的出口 IP 在 Cloudflare 眼里信誉太低，
+只能换网络或换代理出口——**这一步在插件侧绕不过去**。
 
-思路是让 Cloudflare 自己的服务器去访问 soutubot——插件只跟你的 Worker 说话。
-Worker 免费额度是每天 10 万次请求，个人 bot 用不完。
-
-> ⚠️ **先说清楚不确定的地方。** Worker 发出的子请求（Cloudflare → soutubot.moe）
-> 能否稳定通过 soutubot 侧的防护，我没办法在本地验证，只能你部署完实测。
-> 方案 A 和 B 是路径更确定的做法，C 是留给「IP 换不了、`curl_cffi` 也装不上」的情况。
-
-仓库里已经带好了脚本：[`deploy/cloudflare-worker.js`](deploy/cloudflare-worker.js)。
-
-**部署步骤**
-
-1. 打开 [dash.cloudflare.com](https://dash.cloudflare.com/) 并登录（没账号就免费注册一个，
-   **不需要**你有域名）。
-2. 左侧进 **Workers & Pages**（新版菜单叫 **Compute**）→ **Create** →
-   **Create Worker**。
-3. 给它起一个别人猜不到的名字，比如 `stb-relay-7f3a`，先点 **Deploy** 把骨架建出来。
-4. 点 **Edit code**，清空编辑器，把 `deploy/cloudflare-worker.js` 的**全部内容**
-   粘贴进去，右上角再点一次 **Deploy**。
-5. 回到这个 Worker 的 **Settings** → **Variables and Secrets** → **Add**：
-   - Type 选 **Secret**（Text 也行），Name 填 `PROXY_TOKEN`，
-     Value 填一串你自己随机生成的长口令。
-   - 保存后**再 Deploy 一次**，变量才会生效。
-
-   > 不设 `PROXY_TOKEN` 脚本也能跑，但那样你的 Worker 就是个公开代理，
-   > 谁都能白嫖你的额度。**强烈建议设。**
-6. 复制 Worker 的访问地址，形如 `https://stb-relay-7f3a.你的子域.workers.dev`。
-7. 回 AstrBot 的插件配置面板填：
-
-   | 配置项 | 填什么 |
-   | --- | --- |
-   | `reverse_proxy_url` | 第 6 步的地址（结尾不要带 `/`，带了插件也会自动去掉） |
-   | `reverse_proxy_token` | 第 5 步那串口令 |
-   | `reverse_proxy_images` | 想让预览图也走反代才开，否则保持 `false` |
-
-8. 保存并重载插件，发 `搜本子 统计`，「访问链路」那行应该变成
-   `aiohttp / 反代 https://...`。然后正常搜一次图验证。
-
-**几点提醒**
-
-- `*.workers.dev` 这个域名在部分网络环境下本身就不通。如果你有自己的域名，
-  可以在 Worker 的 **Settings → Domains & Routes** 绑一个自定义域，
-  拿它去填 `reverse_proxy_url`。
-- 走反代时插件**不会**再去伪装 TLS 指纹——你本机的指纹对 soutubot 已经不可见了，
-  伪装没有意义。
-- Worker 必须**原样透传 `User-Agent`**：接口签名里含 UA 的长度，改一个字符就变 401。
-  附带的脚本已经处理好，请不要去动那部分。
-- 反代只是换了个入口，**不解决** soutubot 本身宕机、或者你已经在业务层被限流的问题。
+> 补充一句实测结论：我试过用 Cloudflare Worker 做反向代理来「借 Cloudflare 的手」
+> 访问 soutubot，实际会稳定拿到上游 500（Worker 回源到 Cloudflare 自家 zone 的
+> orange-to-orange 路由问题）。所以这条路已经从插件里移除了，别再花时间折腾。
 
 ---
 
@@ -477,9 +435,7 @@ soutubot/
   mirrors.py           镜像域名与来源、语言的中文标签
   render.py            相似度分级、去重、标题清洗、消息与 LLM 摘要渲染
   utils.py             图片嗅探与预处理、配置读取、下载
-tests/                 362 个离线单元测试
-deploy/
-  cloudflare-worker.js Cloudflare Worker 反代脚本（可选，用于绕过 403）
+tests/                 351 个离线单元测试
 ```
 
 `soutubot/` 子包**不依赖 AstrBot**，可以单独拿去别的项目用。
@@ -533,7 +489,8 @@ E-Hentai 登录 Cookie，否则会看到一张白纸。改回 `e-hentai.org` 即
 
 ### 结果消息被平台吞了
 
-有些平台会拦截含外链的消息。把 `show_urls` 关掉试试。
+有些平台会拦截含外链的消息。把 `show_urls` 关掉试试；如果只是想去掉结尾那行
+结果页链接、保留书源链接，关 `show_result_page_link` 就够了。
 QQ 上还可以开 `use_forward_message`，用合并转发发出去。
 
 ### 图片太大
@@ -574,7 +531,7 @@ cd astrbot_plugin_soutubot_doujin
 python -m pytest tests -q
 ```
 
-362 个测试，全部离线（HTTP 层用假 session 注入），不会打真实接口，
+351 个测试，全部离线（HTTP 层用假 session 注入），不会打真实接口，
 1 秒左右跑完。
 
 覆盖范围包括：签名算法（含已知向量）、令牌提取、multipart 封包、

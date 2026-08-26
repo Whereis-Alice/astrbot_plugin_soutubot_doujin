@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.0.2
+
+移除 Cloudflare Worker 反向代理（实测走不通），新增「隐藏完整结果链接」开关。
+
+### 新增
+- 配置项 `show_result_page_link`（默认 `true`）：控制结果结尾那行
+  `完整结果：https://soutubot.moe/results/xxxxxxxx` 是否显示。
+  关掉后命令回复与 LLM 工具返回都不再带这个链接，书源链接不受影响。
+  `show_urls` 仍是总开关，关掉它则两类链接一起隐藏。
+
+### 移除
+- 配置项 `reverse_proxy_url` / `reverse_proxy_token` / `reverse_proxy_images`，
+  以及反代脚本 `deploy/cloudflare-worker.js`。
+  实测 Worker 回源 soutubot.moe 会稳定拿到上游 500（Worker → Cloudflare 自家 zone
+  的 orange-to-orange 路由问题），这条路径不可用，故整体删除。
+  被 403 时请改用配置项 `proxy` 换出口，或用 `tls_impersonate` 伪装 TLS 指纹。
+
+### 变更
+- 配置项从 38 项减少到 36 项。
+- 单元测试从 362 个减少到 351 个。
+- 403 提示文案不再提及反代，改为引导换代理 / 换网络。
+- README 的「遇到 HTTP 403 怎么办」由三个方案精简为两个。
+
 ## v1.0.1
 
 修复直连 soutubot.moe 时被 Cloudflare 拦成 `HTTP 403` 的问题，并补上三档绕过方案。
