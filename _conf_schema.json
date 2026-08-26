@@ -1,0 +1,222 @@
+{
+  "soutubot_doujin_settings": {
+    "description": "搜图Bot酱 · 本子以图搜书设置",
+    "type": "object",
+    "items": {
+      "strict_mode_default": {
+        "description": "默认使用严格模式",
+        "type": "bool",
+        "default": false,
+        "hint": "严格模式（factor 1.4）更不容易误报，但可能一条结果都搜不到。单次可用「搜本子 严格」临时覆盖。"
+      },
+      "max_results": {
+        "description": "命令回复最多显示多少条候选",
+        "type": "int",
+        "default": 5,
+        "hint": "建议 3-8。设为 0 表示不限制。"
+      },
+      "min_similarity": {
+        "description": "可信度下限（相似度百分比）",
+        "type": "int",
+        "default": 28,
+        "hint": "低于该相似度的结果直接丢弃。28 是官网默认的过滤线，调低会明显增加误报。"
+      },
+      "show_urls": {
+        "description": "是否在结果中附带站点链接",
+        "type": "bool",
+        "default": true,
+        "hint": "部分平台会因外链而拦截消息，被吞消息时可以关掉。"
+      },
+      "show_language": {
+        "description": "是否显示语言标签",
+        "type": "bool",
+        "default": true,
+        "hint": "显示「日语 / 简体中文」等信息，便于判断是不是汉化版。"
+      },
+      "mirror_nhentai": {
+        "description": "nhentai 使用的镜像域名",
+        "type": "string",
+        "default": "nhentai.net",
+        "options": ["nhentai.net", "nhentai.xxx"],
+        "hint": "nhentai.net 被墙时可以换 nhentai.xxx。"
+      },
+      "mirror_ehentai": {
+        "description": "E-Hentai 使用的镜像域名",
+        "type": "string",
+        "default": "e-hentai.org",
+        "options": ["e-hentai.org", "exhentai.org"],
+        "hint": "exhentai.org 需要有效的登录 Cookie 才能访问。"
+      },
+      "wait_timeout_seconds": {
+        "description": "等待用户补发图片的超时时间（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "发送「搜本子」但没带图时，会在该时间内等待下一张图片。"
+      },
+      "prompt_send_image": {
+        "description": "提示用户发送图片的文字",
+        "type": "string",
+        "default": "🔍 请发送要搜索的本子图片（60 秒内有效）",
+        "hint": "留空则使用内置文案。"
+      },
+      "prompt_timeout": {
+        "description": "等待超时后的提示文字",
+        "type": "string",
+        "default": "⏰ 搜索请求已超时，请重新发送「搜本子」",
+        "hint": "留空则不发送超时提示。"
+      },
+      "auto_search_on_image": {
+        "description": "收到图片自动搜索（不需要命令）",
+        "type": "bool",
+        "default": false,
+        "hint": "⚠️ 危险：开启后群里任何图片都会被送去 soutubot 搜索，既浪费额度也可能造成隐私问题。强烈建议配合会话白名单使用。"
+      },
+      "cooldown_seconds": {
+        "description": "同一用户的搜索冷却时间（秒）",
+        "type": "int",
+        "default": 10,
+        "hint": "防止刷接口。设为 0 表示不限制。"
+      },
+      "max_concurrency": {
+        "description": "最大并发搜索数",
+        "type": "int",
+        "default": 2,
+        "hint": "整个插件共享。soutubot 是免费公益服务，请不要调高。"
+      },
+      "allowed_sessions": {
+        "description": "会话白名单",
+        "type": "list",
+        "default": [],
+        "hint": "填入群号 / 用户 ID / 完整会话 ID（如 aiocqhttp:GroupMessage:12345）。留空表示不限制。由于结果可能是 NSFW 内容，建议至少在群聊里配置白名单。"
+      },
+      "blocked_sessions": {
+        "description": "会话黑名单",
+        "type": "list",
+        "default": [],
+        "hint": "优先级高于白名单，命中即拒绝。"
+      },
+      "private_only": {
+        "description": "仅允许私聊使用",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后群聊里的命令与工具调用都会被拒绝，最稳妥的合规选项。"
+      },
+      "send_preview_image": {
+        "description": "发送命中页的预览缩略图",
+        "type": "bool",
+        "default": false,
+        "hint": "⚠️ 默认关闭：预览图直接来自成人内容站点的 CDN，在群里发送可能违反平台规定。"
+      },
+      "max_preview_images": {
+        "description": "最多发送几张预览图",
+        "type": "int",
+        "default": 1,
+        "hint": "仅在开启预览图时生效。"
+      },
+      "use_forward_message": {
+        "description": "用合并转发发送结果",
+        "type": "bool",
+        "default": false,
+        "hint": "仅 QQ（aiocqhttp）支持；可以把 NSFW 内容折叠起来，其他平台会自动回退为普通消息。"
+      },
+      "recall_after_seconds": {
+        "description": "多少秒后自动撤回结果",
+        "type": "int",
+        "default": 0,
+        "hint": "0 表示不撤回。仅 QQ（aiocqhttp）支持。"
+      },
+      "llm_tool_enabled": {
+        "description": "是否注册 LLM 搜本子工具",
+        "type": "bool",
+        "default": true,
+        "hint": "启用后大模型可以自己决定调用 soutubot_search_doujin 工具。"
+      },
+      "inject_llm_tool_hint": {
+        "description": "是否在相关请求中注入工具使用提示",
+        "type": "bool",
+        "default": true,
+        "hint": "仅当消息带图片/引用图片，或文本命中下面的关键词时才注入，不会污染普通对话。"
+      },
+      "llm_tool_max_results": {
+        "description": "LLM 工具最多返回多少条候选",
+        "type": "int",
+        "default": 5,
+        "hint": "建议 3-5，太多会占用上下文。"
+      },
+      "llm_tool_include_urls": {
+        "description": "LLM 工具返回结果是否包含链接",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后模型只拿到标题与相似度，不会把成人站点链接念出来。"
+      },
+      "tool_request_keywords": {
+        "description": "触发工具提示注入的关键词",
+        "type": "list",
+        "default": [
+          "搜本子",
+          "找本子",
+          "这是什么本",
+          "什么本子",
+          "本子名",
+          "这本叫什么",
+          "出处",
+          "出自哪里",
+          "搜图",
+          "以图搜书",
+          "doujin",
+          "nhentai",
+          "ehentai"
+        ],
+        "hint": "用户消息包含这些词时，会提醒 LLM 可以调用搜本子工具。"
+      },
+      "tool_description": {
+        "description": "LLM 工具描述",
+        "type": "text",
+        "default": "使用搜图Bot酱（soutubot.moe）以图搜本子。当用户发送或引用一张漫画/本子/同人志的截图或封面，并询问它的名字、出处、是哪一本时调用。工具会返回若干候选书名、相似度、来源站点与链接。结果来自图像检索而非你的知识，相似度不高时必须明确告知用户不确定，不要编造书名。",
+        "hint": "高级设置：直接影响模型何时主动调用工具。"
+      },
+      "cache_enabled": {
+        "description": "缓存搜索结果",
+        "type": "bool",
+        "default": true,
+        "hint": "同一张图重复搜索时直接命中缓存，减轻上游压力。"
+      },
+      "cache_ttl_hours": {
+        "description": "缓存有效期（小时）",
+        "type": "int",
+        "default": 72,
+        "hint": "设为 0 表示永不过期。"
+      },
+      "base_url": {
+        "description": "soutubot 站点地址",
+        "type": "string",
+        "default": "https://soutubot.moe",
+        "hint": "一般不需要改动；若有自建反代可填在这里。"
+      },
+      "proxy": {
+        "description": "HTTP 代理地址",
+        "type": "string",
+        "default": "",
+        "hint": "例如 http://127.0.0.1:7890。留空表示直连。"
+      },
+      "user_agent": {
+        "description": "请求使用的 User-Agent",
+        "type": "text",
+        "default": "",
+        "hint": "留空使用内置值。注意：UA 长度参与接口签名计算，改动后仍会自动保持一致，但不建议随意修改。"
+      },
+      "request_timeout": {
+        "description": "单次请求超时时间（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "图片较大或网络较慢时可以调高。"
+      },
+      "max_retries": {
+        "description": "失败重试次数",
+        "type": "int",
+        "default": 2,
+        "hint": "签名过期（401）、限流（429）和 5xx 会自动重试。"
+      }
+    }
+  }
+}
